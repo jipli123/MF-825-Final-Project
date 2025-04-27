@@ -26,6 +26,7 @@ industry <- industry_raw %>%
   mutate(Date = as.Date(paste0(Date, "01"), format = "%Y%m%d")) %>%
   mutate(across(-Date, ~ as.numeric(.) / 100))
 
+names(industry_raw)
 # Fama-French factors
 factors <- read.csv("./F-F_Research_Data_Factors.CSV") %>%
   mutate(Date = as.Date(paste0(X, "01"), format = "%Y%m%d")) %>%
@@ -119,13 +120,36 @@ for (i in (lookback_months + 1):nrow(full_data_monthly)) {
     
     coefs <- coef(model)
     
+    # Shrinkage parameter (how strong shrinkage is)
+    lambda_shrink <- 0.5  # for example, 20% shrinkage
+    
+    # After getting the raw OLS coefficients:
+    coefs_shrunk <- coefs  # initialize
+    
+    # Shrink each coefficient manually
+    coefs_shrunk["RMRF"] <- (1 - lambda_shrink) * coefs["RMRF"] + lambda_shrink * 1
+    coefs_shrunk["MacroU"] <- (1 - lambda_shrink) * coefs["MacroU"] + lambda_shrink * 0
+    coefs_shrunk["FinU"] <- (1 - lambda_shrink) * coefs["FinU"] + lambda_shrink * 0
+    coefs_shrunk["TPU"] <- (1 - lambda_shrink) * coefs["TPU"] + lambda_shrink * 0
+    coefs_shrunk["EPU"] <- (1 - lambda_shrink) * coefs["EPU"] + lambda_shrink * 0
+    coefs_shrunk["ShortRate"] <- (1 - lambda_shrink) * coefs["ShortRate"] + lambda_shrink * 0
+    
+    # Store shrunk betas
+    betas_this_date$Beta_RMRF[j] <- coefs_shrunk["RMRF"]
+    betas_this_date$Beta_MacroU[j] <- coefs_shrunk["MacroU"]
+    betas_this_date$Beta_FinU[j] <- coefs_shrunk["FinU"]
+    betas_this_date$Beta_TPU[j] <- coefs_shrunk["TPU"]
+    betas_this_date$Beta_EPU[j] <- coefs_shrunk["EPU"]
+    betas_this_date$Beta_ShortRate[j] <- coefs_shrunk["ShortRate"]
+    
+    
     # Store betas
-    betas_this_date$Beta_RMRF[j] <- coefs["RMRF"]
-    betas_this_date$Beta_MacroU[j] <- coefs["MacroU"]
-    betas_this_date$Beta_FinU[j] <- coefs["FinU"]
-    betas_this_date$Beta_TPU[j] <- coefs["TPU"]
-    betas_this_date$Beta_EPU[j] <- coefs["EPU"]
-    betas_this_date$Beta_ShortRate[j] <- coefs["ShortRate"]
+    #betas_this_date$Beta_RMRF[j] <- coefs["RMRF"]
+    #betas_this_date$Beta_MacroU[j] <- coefs["MacroU"]
+    #betas_this_date$Beta_FinU[j] <- coefs["FinU"]
+    #betas_this_date$Beta_TPU[j] <- coefs["TPU"]
+    #betas_this_date$Beta_EPU[j] <- coefs["EPU"]
+    #betas_this_date$Beta_ShortRate[j] <- coefs["ShortRate"]
   }
   
   rolling_betas[[i - lookback_months]] <- betas_this_date
@@ -145,6 +169,41 @@ head(beta_estimates)
 # 1. Define optimization function
 # =============================================
 library(quadprog)
+library(quadprog)
+
+optimize_portfolio_soft <- function(Sigma, betas, 
+                                    target_market_beta = 1, 
+                                    gamma_penalty = 10) {
+  
+  n <- nrow(betas)
+  
+  # Add a small regularization to covariance matrix
+  Sigma_reg <- Sigma + diag(1e-6, n)
+  
+  # Build penalty matrix for soft factor constraints
+  P <- as.matrix(betas[, c("Beta_MacroU", "Beta_FinU", "Beta_TPU", "Beta_EPU", "Beta_ShortRate")])
+  PenaltyMat <- gamma_penalty * (P %*% t(P))  # <-- CORRECTED
+  
+  Dmat <- Sigma_reg + PenaltyMat
+  dvec <- rep(0, n)
+  
+  # Only hard constraints: full investment and market beta = 1
+  Amat <- t(rbind(
+    rep(1, n),
+    betas$Beta_RMRF
+  ))
+  
+  bvec <- c(1, target_market_beta)
+  meq <- length(bvec)  # equality constraints
+  
+  sol <- solve.QP(Dmat, dvec, Amat, bvec, meq)
+  
+  w_opt <- sol$solution
+  w_opt <- w_opt / sum(w_opt)  # Normalize weights again
+  
+  return(w_opt)
+}
+
 
 optimize_portfolio <- function(Sigma, betas, 
                                target_market_beta = 1, 
@@ -184,7 +243,6 @@ optimize_portfolio <- function(Sigma, betas,
   
   return(w_opt)
 }
-
 # =============================================
 # 2. Setup dynamic backtest
 # =============================================
@@ -226,8 +284,11 @@ for (t in (lookback_months + 1):nrow(full_data_monthly)) {
   Sigma_est <- Sigma_est + diag(1e-6, ncol(Sigma_est))
   
   # Solve optimization
+  #w_opt <- optimize_portfolio_soft(Sigma_est, betas_this_date,
+  #                                 target_market_beta = 1,
+  #                                gamma_penalty = 10) 
   w_opt <- optimize_portfolio(Sigma_est, betas_this_date,
-                              target_market_beta = 0.7,   # 🛡️ Defensive tilt
+                              target_market_beta = 1,   # 🛡️ Defensive tilt
                               target_macroU = 0,
                               target_finU = 0,
                               target_TPU = 0,
@@ -420,4 +481,102 @@ ggplot(dynamic_betas_long, aes(x = Date, y = Beta, color = Factor)) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   theme_minimal() +
   scale_color_manual(values = c("TPU_Beta" = "red", "MacroU_Beta" = "blue", "FinU_Beta" = "green"))
+
+
+
+# =============================================
+# 1. Calculate Dynamic Portfolio Factor Exposures (Including Market Beta)
+# =============================================
+
+# Initialize storage
+portfolio_beta_TPU <- rep(NA, nrow(full_data_monthly))
+portfolio_beta_MacroU <- rep(NA, nrow(full_data_monthly))
+portfolio_beta_FinU <- rep(NA, nrow(full_data_monthly))
+portfolio_beta_RMRF <- rep(NA, nrow(full_data_monthly))   # <<< add this
+
+for (t in (lookback_months + 1):nrow(full_data_monthly)) {
+  
+  if (is.na(portfolio_weights[t, 1])) next  # Skip missing
+  
+  betas_this_date <- beta_estimates %>%
+    filter(Date == full_data_monthly$Date[t]) %>%
+    arrange(match(Industry, industry_cols))
+  
+  if (nrow(betas_this_date) != length(industry_cols)) next
+  
+  w_t <- portfolio_weights[t, ]
+  
+  portfolio_beta_TPU[t] <- sum(w_t * betas_this_date$Beta_TPU)
+  portfolio_beta_MacroU[t] <- sum(w_t * betas_this_date$Beta_MacroU)
+  portfolio_beta_FinU[t] <- sum(w_t * betas_this_date$Beta_FinU)
+  portfolio_beta_RMRF[t] <- sum(w_t * betas_this_date$Beta_RMRF)  # <<< add this
+}
+
+# Combine into dataframe
+dynamic_betas <- data.frame(
+  Date = full_data_monthly$Date,
+  RMRF_Beta = portfolio_beta_RMRF,      # <<< add this
+  TPU_Beta = portfolio_beta_TPU,
+  MacroU_Beta = portfolio_beta_MacroU,
+  FinU_Beta = portfolio_beta_FinU
+)
+
+# =============================================
+# 1. Plot Time-Varying Market Beta (RMRF)
+# =============================================
+
+# Base R plot
+plot(dynamic_betas$Date, dynamic_betas$RMRF_Beta, type = "l", lwd = 2,
+     xlab = "Date", ylab = "Beta", main = "Time-Varying Market Beta (RMRF)")
+grid()
+
+# Add horizontal line for the mean
+abline(h = mean(dynamic_betas$RMRF_Beta, na.rm = TRUE), col = "red", lwd = 2, lty = 2)
+
+# Optionally add a legend
+legend("topright", legend = "Mean Beta", col = "red", lwd = 2, lty = 2)
+
+# =============================================
+# 2. Plot Time-Varying TPU, MacroU, and FinU Betas
+# =============================================
+
+# Base R plot
+plot(dynamic_betas$Date, dynamic_betas$TPU_Beta, type = "l", lwd = 2, col = "blue",
+     xlab = "Date", ylab = "Beta", main = "Time-Varying TPU, MacroU, and FinU Betas", ylim= c(-1,1))
+lines(dynamic_betas$Date, dynamic_betas$MacroU_Beta, lwd = 2, col = "red")
+lines(dynamic_betas$Date, dynamic_betas$FinU_Beta, lwd = 2, col = "green")
+grid()
+
+# Add horizontal lines for the means
+abline(h = mean(dynamic_betas$TPU_Beta, na.rm = TRUE), col = "blue", lty = 2, lwd = 2)
+abline(h = mean(dynamic_betas$MacroU_Beta, na.rm = TRUE), col = "red", lty = 2, lwd = 2)
+abline(h = mean(dynamic_betas$FinU_Beta, na.rm = TRUE), col = "green", lty = 2, lwd = 2)
+
+# Add legend
+legend("topright", legend = c("TPU Beta", "MacroU Beta", "FinU Beta"),
+       col = c("blue", "red", "green"), lwd = 2)
+
+
+# =============================================
+# Assume you have:
+#  - target_beta: a vector of target betas (e.g., all 1s)
+#  - realized_beta: your dynamic_betas$RMRF_Beta
+#  - dates: the dates
+# =============================================
+
+# If you don't have target_beta yet, create it (assuming target = 1 always)
+target_beta <- rep(1, length(dynamic_betas$Date))
+
+# =============================================
+# Plot
+# =============================================
+
+plot(dynamic_betas$Date, dynamic_betas$RMRF_Beta, type = "l", lwd = 2, col = "black",
+     xlab = "Date", ylab = "Market Beta", main = "Target vs Realized Market Beta", ylim = c(0.5, 1.5))
+lines(dynamic_betas$Date, target_beta, lwd = 2, col = "red", lty = 2)
+
+legend("topright", legend = c("Realized Beta", "Target Beta"), 
+       col = c("black", "red"), lwd = 2, lty = c(1, 2))
+
+grid()
 
