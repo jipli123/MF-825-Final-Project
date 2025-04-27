@@ -86,7 +86,7 @@ industry_cols <- setdiff(names(full_data_monthly),
 # 5. Optimization Function
 # =============================================
 optimize_multi_factor <- function(Sigma, beta_market, beta_macrou, beta_tpu, beta_epu,
-                                  target_market_beta = 0.5,
+                                  target_market_beta = 1,
                                   target_macrou = 0.0,
                                   target_tpu = 0.0,
                                   target_epu = 0.0) {
