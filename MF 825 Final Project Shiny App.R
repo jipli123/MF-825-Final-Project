@@ -90,7 +90,7 @@ ui <- fluidPage(
     sidebarPanel(
       sliderInput("target_beta", "Target Market Beta:", min = 0.5, max = 1.5, value = 1.0, step = 0.05),
       selectInput("crisis_choice", "Select Crisis:", 
-                  choices = c("Full Sample", "Dot-Com Crash", "Global Financial Crisis", "European Debt Crisis", "COVID-19 Crash"))
+                  choices = c("Full Sample", "Dot-Com Crash", "Global Financial Crisis", "European Debt Crisis","China-U.S. Trade War","COVID-19 Crash"))
     ),
     mainPanel(
       plotOutput("cumulative_plot"),
@@ -182,6 +182,9 @@ server <- function(input, output) {
     } else if (input$crisis_choice == "COVID-19 Crash") {
       results_filtered <- results %>% filter(Date >= as.Date("2020-02-01") & Date <= as.Date("2020-09-30"))
       title_suffix <- "COVID-19 Crash"
+    } else if (input$crisis_choice == "China-U.S. Trade War") {
+      results_filtered <- results %>% filter(Date >= as.Date("2018-01-01") & Date <= as.Date("2024-12-31"))
+      title_suffix <- "China-U.S. Trade War"
     }
     
     ggplot(results_filtered, aes(x = Date)) +
